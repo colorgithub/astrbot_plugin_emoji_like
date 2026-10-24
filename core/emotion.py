@@ -100,6 +100,9 @@ class EmotionJudger:
         except json.JSONDecodeError as e:
             raise ValueError(f"LLM 返回非 JSON: {text}") from e
 
+        if not isinstance(data, dict):
+            raise ValueError(f"LLM 返回的 JSON 不是对象: {data}")
+
         emotion = data.get("emotion")
         if not emotion or not isinstance(emotion, str):
             raise ValueError(f"LLM JSON 缺少或非法 emotion 字段: {data}")

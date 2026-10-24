@@ -14,6 +14,8 @@ from astrbot.core.star.context import Context
 from astrbot.core.star.star_tools import StarTools
 from astrbot.core.utils.astrbot_path import get_astrbot_plugin_path
 
+from .access import AccessControl
+
 
 class ConfigNode:
     """
@@ -119,6 +121,8 @@ class PluginConfig(ConfigNode):
     reaction_follow_enabled: bool
     reaction_follow_prob: float
     reaction_follow_dedupe_seconds: float
+    whitelist: list[str]
+    blacklist: list[str]
 
     _plugin_name = "astrbot_plugin_emoji_like"
 
@@ -136,6 +140,24 @@ class PluginConfig(ConfigNode):
 
         self.emotion_mapping = self.parse_mapping_list()
         self.emotion_labels: list[str] = list(self.emotion_mapping.keys())
+
+        self._access: AccessControl | None = None
+        self._access_signature: tuple[tuple[Any, ...], ...] | None = None
+
+    @property
+    def access(self) -> AccessControl:
+        """黑白名单控制器。
+
+        每次访问都会检查底层配置是否变化，因此 WebUI 中修改名单后无需重载插件。
+        """
+        signature = (
+            tuple(self.whitelist or ()),
+            tuple(self.blacklist or ()),
+        )
+        if self._access is None or signature != self._access_signature:
+            self._access = AccessControl.from_config(self._data)
+            self._access_signature = signature
+        return self._access
 
     def parse_mapping_list(self) -> dict[str, list[int]]:
         """

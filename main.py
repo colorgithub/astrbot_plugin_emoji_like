@@ -25,12 +25,62 @@ def _raw_get(raw, key, default=None):
         return getattr(raw, key, default)
 
 
+def _to_id(value) -> str:
+    """把消息中的 ID 规范化为去除首尾空白的字符串"""
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
 class EmojiLikePlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         self.cfg = PluginConfig(config, context)
         self.judger = EmotionJudger(self.cfg)
         self._followed_reactions: dict[tuple[str, str], float] = {}
+
+    def _group_id_of(self, event: AiocqhttpMessageEvent) -> str:
+        """读取事件所属群号，优先取 raw_message，兼容通知事件"""
+        raw = getattr(getattr(event, "message_obj", None), "raw_message", None)
+        group_id = _raw_get(raw, "group_id") if raw is not None else None
+        if group_id:
+            return _to_id(group_id)
+        try:
+            return _to_id(event.get_group_id())
+        except Exception:
+            return ""
+
+    def _user_id_of(self, event: AiocqhttpMessageEvent) -> str:
+        """读取事件的操作者 QQ 号，优先取 raw_message（通知事件中为贴表情的人）"""
+        raw = getattr(getattr(event, "message_obj", None), "raw_message", None)
+        user_id = _raw_get(raw, "user_id") if raw is not None else None
+        if user_id:
+            return _to_id(user_id)
+        try:
+            return _to_id(event.get_sender_id())
+        except Exception:
+            return ""
+
+    def _umo_of(self, event: AiocqhttpMessageEvent) -> str:
+        """读取事件所属会话 ID（UMO），如 aiocqhttp:GroupMessage:123456"""
+        try:
+            return _to_id(event.unified_msg_origin)
+        except Exception:
+            return ""
+
+    def _is_allowed(
+        self,
+        event: AiocqhttpMessageEvent,
+        *,
+        group_id=None,
+        user_id=None,
+    ) -> bool:
+        """会话 / 群聊 / 用户黑白名单校验，未通过则插件不响应"""
+        gid = self._group_id_of(event) if group_id is None else _to_id(group_id)
+        uid = self._user_id_of(event) if user_id is None else _to_id(user_id)
+        return self.cfg.access.is_allowed(
+            umo=self._umo_of(event), group_id=gid, user_id=uid
+        )
 
     async def _emoji_like(
         self,
@@ -55,22 +105,28 @@ class EmojiLikePlugin(Star):
 
     async def _follow_reaction_notice(self, event: AiocqhttpMessageEvent) -> bool:
         raw = getattr(event.message_obj, "raw_message", None)
-        if not raw or raw.get("post_type") != "notice":
+        if not raw or _raw_get(raw, "post_type") != "notice":
             return False
-        if raw.get("notice_type") not in ("group_msg_emoji_like", "reaction"):
+        if _raw_get(raw, "notice_type") not in ("group_msg_emoji_like", "reaction"):
             return False
-        if raw.get("is_add") is False:
+        if not self._is_allowed(
+            event,
+            group_id=_raw_get(raw, "group_id"),
+            user_id=_raw_get(raw, "user_id"),
+        ):
             return False
-        if str(raw.get("user_id")) == str(event.get_self_id()):
+        if _raw_get(raw, "is_add") is False:
+            return False
+        if str(_raw_get(raw, "user_id")) == str(event.get_self_id()):
             return False
         if random.random() >= self.cfg.emoji_reaction_follow_prob:
             return False
 
-        message_id = raw.get("message_id")
+        message_id = _raw_get(raw, "message_id")
         if not message_id:
             return False
 
-        for item in raw.get("likes") or []:
+        for item in _raw_get(raw, "likes") or []:
             emoji_id = item.get("emoji_id") if isinstance(item, dict) else None
             if str(emoji_id).isdigit():
                 await self._emoji_like(event, [int(emoji_id)], message_id=message_id)
@@ -80,6 +136,9 @@ class EmojiLikePlugin(Star):
     @filter.command("贴表情")
     async def on_command(self, event: AiocqhttpMessageEvent, emojiNum: int = 5):
         """贴表情 <数量>"""
+        if not self._is_allowed(event):
+            return
+
         chain = event.get_messages()
         if not chain:
             return
@@ -102,6 +161,9 @@ class EmojiLikePlugin(Star):
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
     async def on_message(self, event: AiocqhttpMessageEvent):
         """群消息监听"""
+        if not self._is_allowed(event):
+            return
+
         if await self._follow_reaction_notice(event):
             event.stop_event()
             return
@@ -185,7 +247,16 @@ class EmojiLikePlugin(Star):
         if str(reactor_id) == str(self_id):
             return
 
+        # 会话 / 群聊 / 用户黑白名单
+        if not self._is_allowed(event, group_id=group_id, user_id=reactor_id):
+            return
+
         if not message_id or not likes:
+            return
+
+        # 按概率决定是否跟随（先判定概率，避免未跟随也消耗去重窗口）
+        reaction_follow_prob = getattr(self.cfg, "reaction_follow_prob", 0.3)
+        if random.random() >= reaction_follow_prob:
             return
 
         # 从 likes 中提取 emoji_id，并过滤去重
@@ -200,11 +271,6 @@ class EmojiLikePlugin(Star):
                 continue
 
         if not emoji_ids:
-            return
-
-        # 按概率决定是否跟随
-        reaction_follow_prob = getattr(self.cfg, "reaction_follow_prob", 0.3)
-        if random.random() >= reaction_follow_prob:
             return
 
         logger.info(

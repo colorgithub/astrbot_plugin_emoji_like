@@ -98,5 +98,17 @@
             "step": 1
         },
         "default": 10
+    },
+    "whitelist": {
+        "description": "贴表情白名单（会话ID列表）",
+        "hint": "请填写会话ID（可用命令 /sid 查看，例如 aiocqhttp:GroupMessage:123456），也可直接填群号、QQ号或 UMO 前缀。一旦添加了白名单，则只有白名单会话会触发贴表情，优先级比黑名单高。留空表示不限制",
+        "type": "list",
+        "default": []
+    },
+    "blacklist": {
+        "description": "贴表情黑名单（会话ID列表）",
+        "hint": "请填写会话ID（可用命令 /sid 查看）。黑名单会话不会触发贴表情；白名单非空时以白名单为准。也支持群号、QQ号，以及 UMO 前缀（如 aiocqhttp:GroupMessage）",
+        "type": "list",
+        "default": []
     }
 }
