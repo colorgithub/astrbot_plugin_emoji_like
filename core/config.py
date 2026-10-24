@@ -14,7 +14,7 @@ from astrbot.core.star.context import Context
 from astrbot.core.star.star_tools import StarTools
 from astrbot.core.utils.astrbot_path import get_astrbot_plugin_path
 
-from .access import AccessControl
+from .access import AccessControl, normalize_ids
 
 
 class ConfigNode:
@@ -142,7 +142,9 @@ class PluginConfig(ConfigNode):
         self.emotion_labels: list[str] = list(self.emotion_mapping.keys())
 
         self._access: AccessControl | None = None
-        self._access_signature: tuple[tuple[Any, ...], ...] | None = None
+        self._access_signature: (
+            tuple[frozenset[str], frozenset[str]] | None
+        ) = None
 
     @property
     def access(self) -> AccessControl:
@@ -150,9 +152,10 @@ class PluginConfig(ConfigNode):
 
         每次访问都会检查底层配置是否变化，因此 WebUI 中修改名单后无需重载插件。
         """
+        # 先规范化为集合，兼容误填为标量（如 whitelist: 123）的情况
         signature = (
-            tuple(self.whitelist or ()),
-            tuple(self.blacklist or ()),
+            frozenset(normalize_ids(self.whitelist)),
+            frozenset(normalize_ids(self.blacklist)),
         )
         if self._access is None or signature != self._access_signature:
             self._access = AccessControl.from_config(self._data)

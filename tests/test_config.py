@@ -131,6 +131,31 @@ class PluginConfigAccessRealtimeTests(unittest.TestCase):
         self.assertTrue(access.is_allowed(umo="aiocqhttp:GroupMessage:100", group_id="100", user_id="200"))
         self.assertFalse(access.has_rules)
 
+    def test_scalar_whitelist_id_is_supported(self):
+        """配置误填为标量（如 whitelist: 123）时不应在 tuple() 处抛 TypeError。"""
+        plugin, _, config = make_plugin(whitelist=123, blacklist="456")
+        access = plugin.cfg.access
+        self.assertTrue(access.is_allowed(user_id=123))
+        self.assertFalse(access.is_allowed(user_id=789))
+
+        # 标量变化后签名缓存也应失效
+        config["whitelist"] = 999
+        self.assertTrue(plugin.cfg.access.is_allowed(user_id=999))
+        self.assertFalse(plugin.cfg.access.is_allowed(user_id=123))
+
+    def test_scalar_string_with_separators_is_supported(self):
+        plugin, _, _ = make_plugin(whitelist="100,101")
+        access = plugin.cfg.access
+        self.assertTrue(access.is_allowed(group_id="100"))
+        self.assertTrue(access.is_allowed(group_id="101"))
+        self.assertFalse(access.is_allowed(group_id="102"))
+
+    def test_scalar_blacklist_id_is_supported(self):
+        plugin, _, _ = make_plugin(blacklist=456)
+        access = plugin.cfg.access
+        self.assertFalse(access.is_allowed(user_id="456"))
+        self.assertTrue(access.is_allowed(user_id="789"))
+
     def test_umo_prefix_in_config(self):
         plugin, _, _ = make_plugin(whitelist=["aiocqhttp:GroupMessage"])
         self.assertTrue(
@@ -147,16 +172,28 @@ class PluginConfigAccessRealtimeTests(unittest.TestCase):
 
 class JudgeProviderTests(unittest.TestCase):
     def test_uses_provider_by_id_first(self):
-        provider = FakeProvider()
-        plugin, context, _ = make_plugin(provider=provider)
-        self.assertIs(plugin.cfg.get_judge_provider(), provider)
+        configured = FakeProvider('{"emotion": "开心"}')
+        fallback = FakeProvider('{"emotion": "生气"}')
+        context = FakeContext()
+        context.by_id_provider = configured
+        context.using_provider = fallback
+        plugin, _, _ = make_plugin(
+            context=context, judge_provider_id="my-provider"
+        )
+
+        provider = plugin.cfg.get_judge_provider()
+
+        self.assertIs(provider, configured)
+        self.assertIsNot(provider, fallback)
 
     def test_falls_back_to_using_provider(self):
         fallback = FakeProvider()
         context = FakeContext()
         context.by_id_provider = None
         context.using_provider = fallback
-        plugin, _, _ = make_plugin(context=context)
+        plugin, _, _ = make_plugin(
+            context=context, judge_provider_id="missing-provider"
+        )
         self.assertIs(plugin.cfg.get_judge_provider("umo"), fallback)
 
     def test_rejects_non_provider_object(self):
@@ -168,9 +205,12 @@ class JudgeProviderTests(unittest.TestCase):
             plugin.cfg.get_judge_provider()
 
     def test_judge_provider_id_is_passed_through(self):
-        provider = FakeProvider()
+        configured = FakeProvider()
+        fallback = FakeProvider()
         seen = []
-        context = FakeContext(provider)
+        context = FakeContext()
+        context.by_id_provider = configured
+        context.using_provider = fallback
         original = context.get_provider_by_id
 
         def spy(provider_id=None, *args, **kwargs):
@@ -179,7 +219,7 @@ class JudgeProviderTests(unittest.TestCase):
 
         context.get_provider_by_id = spy
         plugin, _, _ = make_plugin(context=context, judge_provider_id="my-provider")
-        self.assertIs(plugin.cfg.get_judge_provider(), provider)
+        self.assertIs(plugin.cfg.get_judge_provider(), configured)
         self.assertEqual(seen, ["my-provider"])
 
 
